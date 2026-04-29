@@ -1,26 +1,258 @@
-from crypto_utils import *
+# =========================
+# IMPORTS
+# =========================
 
-# luis
-priv_luis, pub_luis = gerar_chaves()
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding as sym_padding
+from cryptography.hazmat.backends import default_backend
+import os
+import base64
 
-# henrique
-priv_henrique, pub_henrique = gerar_chaves()
 
-mensagem = "Transferência aprovada com sucesso"
+# =========================
+# CRIPTOGRAFIA (PGP SIMPLIFICADO)
+# =========================
 
-print("Mensagem original:", mensagem)
+def gerar_chaves():
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
 
-pacote = criptografar_mensagem(
-    mensagem,
-    pub_henrique,
-    priv_luis
-)
+    public_key = private_key.public_key()
 
-mensagem_final, assinatura_valida = descriptografar_mensagem(
-    pacote,
-    priv_henrique,
-    pub_luis
-)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    )
 
-print("Mensagem descriptografada:", mensagem_final)
-print("Assinatura válida:", assinatura_valida)
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+    return private_pem, public_pem
+
+
+def criptografar_mensagem(mensagem, chave_publica_destino, chave_privada_remetente):
+    chave_aes = os.urandom(32)
+    iv = os.urandom(16)
+
+    padder = sym_padding.PKCS7(algorithms.AES.block_size).padder()
+    padded_data = padder.update(mensagem.encode()) + padder.finalize()
+
+    cipher = Cipher(
+        algorithms.AES(chave_aes),
+        modes.CBC(iv),
+        backend=default_backend()
+    )
+
+    encryptor = cipher.encryptor()
+    mensagem_criptografada = encryptor.update(padded_data) + encryptor.finalize()
+
+    public_key = serialization.load_pem_public_key(chave_publica_destino)
+
+    chave_aes_criptografada = public_key.encrypt(
+        chave_aes,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    private_key = serialization.load_pem_private_key(
+        chave_privada_remetente,
+        password=None
+    )
+
+    assinatura = private_key.sign(
+        mensagem.encode(),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+
+    return {
+        'mensagem': base64.b64encode(mensagem_criptografada).decode(),
+        'iv': base64.b64encode(iv).decode(),
+        'chave_aes': base64.b64encode(chave_aes_criptografada).decode(),
+        'assinatura': base64.b64encode(assinatura).decode()
+    }
+
+
+def descriptografar_mensagem(dados, chave_privada_destino, chave_publica_remetente):
+    private_key = serialization.load_pem_private_key(
+        chave_privada_destino,
+        password=None
+    )
+
+    chave_aes = private_key.decrypt(
+        base64.b64decode(dados['chave_aes']),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    cipher = Cipher(
+        algorithms.AES(chave_aes),
+        modes.CBC(base64.b64decode(dados['iv'])),
+        backend=default_backend()
+    )
+
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(
+        base64.b64decode(dados['mensagem'])
+    ) + decryptor.finalize()
+
+    unpadder = sym_padding.PKCS7(algorithms.AES.block_size).unpadder()
+    mensagem = unpadder.update(padded_data) + unpadder.finalize()
+    mensagem = mensagem.decode()
+
+    public_key = serialization.load_pem_public_key(chave_publica_remetente)
+
+    try:
+        public_key.verify(
+            base64.b64decode(dados['assinatura']),
+            mensagem.encode(),
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+        valido = True
+    except:
+        valido = False
+
+    return mensagem, valido
+
+
+# =========================
+# RELÓGIO LÓGICO (LAMPORT)
+# =========================
+
+class LogicalClock:
+    def __init__(self):
+        self.time = 0
+
+    def increment(self):
+        self.time += 1
+        return self.time
+
+    def update(self, received_time):
+        self.time = max(self.time, received_time) + 1
+        return self.time
+
+
+# =========================
+# MENSAGEM
+# =========================
+
+class Message:
+    def __init__(self, producer, consumer, channel, content, mode, timestamp):
+        self.producer = producer
+        self.consumer = consumer
+        self.channel = channel
+        self.content = content
+        self.mode = mode  # unicast, multicast, broadcast
+        self.timestamp_send = timestamp
+        self.timestamp_receive = None
+
+
+# =========================
+# BUFFER DE MENSAGENS
+# =========================
+
+class MessageBuffer:
+    def __init__(self):
+        self.buffer = []
+
+    def store(self, message):
+        self.buffer.append(message)
+
+    def consume(self, consumer_name, logical_time):
+        for msg in self.buffer:
+            if msg.consumer == consumer_name or msg.mode == "broadcast":
+                msg.timestamp_receive = logical_time
+                return msg
+        return None
+
+
+# =========================
+# LOG
+# =========================
+
+def registrar_log(texto):
+    with open("mensageria.log", "a", encoding="utf-8") as arquivo:
+        arquivo.write(texto + "\n")
+
+
+# =========================
+# EXECUÇÃO (SIMULAÇÃO)
+# =========================
+
+if __name__ == "__main__":
+
+    print("=== SISTEMA DE MENSAGERIA DISTRIBUÍDA ===\n")
+
+    # relógios
+    clock_alice = LogicalClock()
+    clock_bob = LogicalClock()
+
+    # buffer
+    buffer = MessageBuffer()
+
+    # geração de chaves
+    priv_alice, pub_alice = gerar_chaves()
+    priv_bob, pub_bob = gerar_chaves()
+
+    # envio
+    mensagem_original = "Transferência realizada com sucesso"
+
+    ts_envio = clock_alice.increment()
+
+    pacote = criptografar_mensagem(
+        mensagem_original,
+        pub_bob,
+        priv_alice
+    )
+
+    mensagem = Message(
+        producer="Alice",
+        consumer="Bob",
+        channel="financeiro",
+        content=pacote,
+        mode="unicast",
+        timestamp=ts_envio
+    )
+
+    buffer.store(mensagem)
+
+    registrar_log(f"[PRODUCER] Alice -> Bob | ts={ts_envio}")
+
+    # consumo
+    ts_receb = clock_bob.update(ts_envio)
+
+    msg_recebida = buffer.consume("Bob", ts_receb)
+
+    mensagem_final, valido = descriptografar_mensagem(
+        msg_recebida.content,
+        priv_bob,
+        pub_alice
+    )
+
+    registrar_log(f"[CONSUMER] Bob recebeu de Alice | ts={ts_receb}")
+
+    # saída
+    print("Mensagem final:", mensagem_final)
+    print("Assinatura válida:", valido)
+    print("Timestamp envio:", ts_envio)
+    print("Timestamp recebimento:", ts_receb)

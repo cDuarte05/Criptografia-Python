@@ -1,4 +1,4 @@
-from crypto_utils import *
+from crypto_utils import gerar_chaves, criptografar_mensagem, descriptografar_mensagem
 
 priv_a, pub_a = gerar_chaves()
 priv_b, pub_b = gerar_chaves()
