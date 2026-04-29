@@ -204,30 +204,30 @@ if __name__ == "__main__":
     print("=== SISTEMA DE MENSAGERIA DISTRIBUÍDA ===\n")
 
     # relógios
-    clock_alice = LogicalClock()
-    clock_bob = LogicalClock()
+    clock_Henrique = LogicalClock()
+    clock_Luis = LogicalClock()
 
     # buffer
     buffer = MessageBuffer()
 
     # geração de chaves
-    priv_alice, pub_alice = gerar_chaves()
-    priv_bob, pub_bob = gerar_chaves()
+    priv_Henrique, pub_Henrique = gerar_chaves()
+    priv_Luis, pub_Luis = gerar_chaves()
 
     # envio
     mensagem_original = "Transferência realizada com sucesso"
 
-    ts_envio = clock_alice.increment()
+    ts_envio = clock_Henrique.increment()
 
     pacote = criptografar_mensagem(
         mensagem_original,
-        pub_bob,
-        priv_alice
+        pub_Luis,
+        priv_Henrique
     )
 
     mensagem = Message(
-        producer="Alice",
-        consumer="Bob",
+        producer="Henrique",
+        consumer="Luis",
         channel="financeiro",
         content=pacote,
         mode="unicast",
@@ -236,20 +236,20 @@ if __name__ == "__main__":
 
     buffer.store(mensagem)
 
-    registrar_log(f"[PRODUCER] Alice -> Bob | ts={ts_envio}")
+    registrar_log(f"[PRODUCER] Henrique -> Luis | ts={ts_envio}")
 
     # consumo
-    ts_receb = clock_bob.update(ts_envio)
+    ts_receb = clock_Luis.update(ts_envio)
 
-    msg_recebida = buffer.consume("Bob", ts_receb)
+    msg_recebida = buffer.consume("Luis", ts_receb)
 
     mensagem_final, valido = descriptografar_mensagem(
         msg_recebida.content,
-        priv_bob,
-        pub_alice
+        priv_Luis,
+        pub_Henrique
     )
 
-    registrar_log(f"[CONSUMER] Bob recebeu de Alice | ts={ts_receb}")
+    registrar_log(f"[CONSUMER] Luis recebeu de Henrique | ts={ts_receb}")
 
     # saída
     print("Mensagem final:", mensagem_final)
