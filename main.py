@@ -34,7 +34,8 @@ class CryptoPGP:
         )
 
     @staticmethod
-    def encrypt(msg, pub_dest, priv_sender):
+    def encrypt(msg, public_keys, priv_sender):
+
         chave_aes = os.urandom(32)
         iv = os.urandom(16)
 
@@ -42,18 +43,25 @@ class CryptoPGP:
         padded = padder.update(msg.encode()) + padder.finalize()
 
         cipher = Cipher(algorithms.AES(chave_aes), modes.CBC(iv))
-        encrypted = cipher.encryptor().update(padded) + cipher.encryptor().finalize()
+        encryptor = cipher.encryptor()
+        encrypted = encryptor.update(padded) + encryptor.finalize()
 
-        pub = serialization.load_pem_public_key(pub_dest)
+        encrypted_keys = {}
 
-        enc_key = pub.encrypt(
-            chave_aes,
-            padding.OAEP(
-                mgf=padding.MGF1(hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
-        )
+        # 🔥 chave AES criptografada para cada destinatário
+        for name, pub_key in public_keys.items():
+            pub = serialization.load_pem_public_key(pub_key)
+
+            encrypted_keys[name] = base64.b64encode(
+                pub.encrypt(
+                    chave_aes,
+                    padding.OAEP(
+                        mgf=padding.MGF1(hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+            ).decode()
 
         priv = serialization.load_pem_private_key(priv_sender, password=None)
 
@@ -69,16 +77,22 @@ class CryptoPGP:
         return {
             "data": base64.b64encode(encrypted).decode(),
             "iv": base64.b64encode(iv).decode(),
-            "key": base64.b64encode(enc_key).decode(),
+            "keys": encrypted_keys,
             "sig": base64.b64encode(signature).decode()
         }
 
     @staticmethod
-    def decrypt(pkg, priv_dest, pub_sender):
+    def decrypt(pkg, priv_dest, pub_sender, my_name):
+
         priv = serialization.load_pem_private_key(priv_dest, password=None)
 
-        aes = priv.decrypt(
-            base64.b64decode(pkg["key"]),
+        encrypted_key = pkg["keys"].get(my_name)
+
+        if not encrypted_key:
+            raise Exception("Sem chave para este destinatário")
+
+        chave_aes = priv.decrypt(
+            base64.b64decode(encrypted_key),
             padding.OAEP(
                 mgf=padding.MGF1(hashes.SHA256()),
                 algorithm=hashes.SHA256(),
@@ -87,11 +101,12 @@ class CryptoPGP:
         )
 
         cipher = Cipher(
-            algorithms.AES(aes),
+            algorithms.AES(chave_aes),
             modes.CBC(base64.b64decode(pkg["iv"]))
         )
 
-        padded = cipher.decryptor().update(base64.b64decode(pkg["data"])) + cipher.decryptor().finalize()
+        decryptor = cipher.decryptor()
+        padded = decryptor.update(base64.b64decode(pkg["data"])) + decryptor.finalize()
 
         unpad = sym_padding.PKCS7(128).unpadder()
         msg = (unpad.update(padded) + unpad.finalize()).decode()
@@ -157,7 +172,7 @@ class Message:
 
 
 # =========================
-# BROKER (BUFFER DISTRIBUÍDO)
+# BROKER
 # =========================
 
 class MessageBroker:
@@ -171,7 +186,6 @@ class MessageBroker:
 
     def publish(self, message):
         self.messages.append(message)
-
         log(f"[SEND] {message.sender} -> {message.mode} | ts={message.ts_send}")
 
     def consume(self, client):
@@ -192,7 +206,7 @@ class MessageBroker:
 
 
 # =========================
-# CLIENTE (NÓ DISTRIBUÍDO)
+# CLIENTE
 # =========================
 
 class Client:
@@ -205,9 +219,18 @@ class Client:
     def send(self, broker, msg, receivers=None, channel=None, mode="unicast"):
         ts = self.clock.tick()
 
-        pkg = CryptoPGP.encrypt(msg, receivers[0].pub if receivers else self.pub, self.priv)
+        pub_keys = {r.name: r.pub for r in receivers} if receivers else {}
 
-        m = Message(self.name, [r.name for r in receivers] if receivers else [], channel, pkg, mode, ts)
+        pkg = CryptoPGP.encrypt(msg, pub_keys, self.priv)
+
+        m = Message(
+            self.name,
+            [r.name for r in receivers] if receivers else [],
+            channel,
+            pkg,
+            mode,
+            ts
+        )
 
         broker.publish(m)
 
@@ -219,7 +242,12 @@ class Client:
 
             pub_sender = sender_pub_map[m.sender]
 
-            msg, valid = CryptoPGP.decrypt(m.content, self.priv, pub_sender)
+            msg, valid = CryptoPGP.decrypt(
+                m.content,
+                self.priv,
+                pub_sender,
+                self.name  # 🔥 ESSENCIAL
+            )
 
             log(f"[RECV] {self.name} <- {m.sender} | ts={ts} | valid={valid}")
 
