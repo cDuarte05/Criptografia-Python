@@ -1,258 +1,226 @@
-# =========================
-# IMPORTS
-# =========================
+import os
+import base64
+from collections import defaultdict
 
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding as sym_padding
-from cryptography.hazmat.backends import default_backend
-import os
-import base64
 
 
 # =========================
-# CRIPTOGRAFIA (PGP SIMPLIFICADO)
+# CRIPTOGRAFIA (PGP)
 # =========================
 
-def gerar_chaves():
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048
-    )
+class CryptoPGP:
 
-    public_key = private_key.public_key()
-
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-
-    public_pem = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-
-    return private_pem, public_pem
-
-
-def criptografar_mensagem(mensagem, chave_publica_destino, chave_privada_remetente):
-    chave_aes = os.urandom(32)
-    iv = os.urandom(16)
-
-    padder = sym_padding.PKCS7(algorithms.AES.block_size).padder()
-    padded_data = padder.update(mensagem.encode()) + padder.finalize()
-
-    cipher = Cipher(
-        algorithms.AES(chave_aes),
-        modes.CBC(iv),
-        backend=default_backend()
-    )
-
-    encryptor = cipher.encryptor()
-    mensagem_criptografada = encryptor.update(padded_data) + encryptor.finalize()
-
-    public_key = serialization.load_pem_public_key(chave_publica_destino)
-
-    chave_aes_criptografada = public_key.encrypt(
-        chave_aes,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+    @staticmethod
+    def gerar_chaves():
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
         )
-    )
 
-    private_key = serialization.load_pem_private_key(
-        chave_privada_remetente,
-        password=None
-    )
-
-    assinatura = private_key.sign(
-        mensagem.encode(),
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        hashes.SHA256()
-    )
-
-    return {
-        'mensagem': base64.b64encode(mensagem_criptografada).decode(),
-        'iv': base64.b64encode(iv).decode(),
-        'chave_aes': base64.b64encode(chave_aes_criptografada).decode(),
-        'assinatura': base64.b64encode(assinatura).decode()
-    }
-
-
-def descriptografar_mensagem(dados, chave_privada_destino, chave_publica_remetente):
-    private_key = serialization.load_pem_private_key(
-        chave_privada_destino,
-        password=None
-    )
-
-    chave_aes = private_key.decrypt(
-        base64.b64decode(dados['chave_aes']),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+        return (
+            private_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()
+            ),
+            private_key.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo
+            )
         )
-    )
 
-    cipher = Cipher(
-        algorithms.AES(chave_aes),
-        modes.CBC(base64.b64decode(dados['iv'])),
-        backend=default_backend()
-    )
+    @staticmethod
+    def encrypt(msg, pub_dest, priv_sender):
+        chave_aes = os.urandom(32)
+        iv = os.urandom(16)
 
-    decryptor = cipher.decryptor()
-    padded_data = decryptor.update(
-        base64.b64decode(dados['mensagem'])
-    ) + decryptor.finalize()
+        padder = sym_padding.PKCS7(128).padder()
+        padded = padder.update(msg.encode()) + padder.finalize()
 
-    unpadder = sym_padding.PKCS7(algorithms.AES.block_size).unpadder()
-    mensagem = unpadder.update(padded_data) + unpadder.finalize()
-    mensagem = mensagem.decode()
+        cipher = Cipher(algorithms.AES(chave_aes), modes.CBC(iv))
+        encrypted = cipher.encryptor().update(padded) + cipher.encryptor().finalize()
 
-    public_key = serialization.load_pem_public_key(chave_publica_remetente)
+        pub = serialization.load_pem_public_key(pub_dest)
 
-    try:
-        public_key.verify(
-            base64.b64decode(dados['assinatura']),
-            mensagem.encode(),
+        enc_key = pub.encrypt(
+            chave_aes,
+            padding.OAEP(
+                mgf=padding.MGF1(hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        priv = serialization.load_pem_private_key(priv_sender, password=None)
+
+        signature = priv.sign(
+            msg.encode(),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
                 salt_length=padding.PSS.MAX_LENGTH
             ),
             hashes.SHA256()
         )
-        valido = True
-    except:
-        valido = False
 
-    return mensagem, valido
+        return {
+            "data": base64.b64encode(encrypted).decode(),
+            "iv": base64.b64encode(iv).decode(),
+            "key": base64.b64encode(enc_key).decode(),
+            "sig": base64.b64encode(signature).decode()
+        }
+
+    @staticmethod
+    def decrypt(pkg, priv_dest, pub_sender):
+        priv = serialization.load_pem_private_key(priv_dest, password=None)
+
+        aes = priv.decrypt(
+            base64.b64decode(pkg["key"]),
+            padding.OAEP(
+                mgf=padding.MGF1(hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        cipher = Cipher(
+            algorithms.AES(aes),
+            modes.CBC(base64.b64decode(pkg["iv"]))
+        )
+
+        padded = cipher.decryptor().update(base64.b64decode(pkg["data"])) + cipher.decryptor().finalize()
+
+        unpad = sym_padding.PKCS7(128).unpadder()
+        msg = (unpad.update(padded) + unpad.finalize()).decode()
+
+        pub = serialization.load_pem_public_key(pub_sender)
+
+        try:
+            pub.verify(
+                base64.b64decode(pkg["sig"]),
+                msg.encode(),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            valid = True
+        except:
+            valid = False
+
+        return msg, valid
 
 
 # =========================
-# RELÓGIO LÓGICO (LAMPORT)
+# RELÓGIO LÓGICO
 # =========================
 
 class LogicalClock:
     def __init__(self):
         self.time = 0
 
-    def increment(self):
+    def tick(self):
         self.time += 1
         return self.time
 
-    def update(self, received_time):
-        self.time = max(self.time, received_time) + 1
+    def update(self, t):
+        self.time = max(self.time, t) + 1
         return self.time
 
 
 # =========================
-# MENSAGEM
+# LOGGER
+# =========================
+
+def log(msg):
+    with open("log.txt", "a") as f:
+        f.write(msg + "\n")
+
+
+# =========================
+# MESSAGE
 # =========================
 
 class Message:
-    def __init__(self, producer, consumer, channel, content, mode, timestamp):
-        self.producer = producer
-        self.consumer = consumer
+    def __init__(self, sender, receivers, channel, content, mode, ts):
+        self.sender = sender
+        self.receivers = receivers
         self.channel = channel
         self.content = content
-        self.mode = mode  # unicast, multicast, broadcast
-        self.timestamp_send = timestamp
-        self.timestamp_receive = None
+        self.mode = mode
+        self.ts_send = ts
+        self.ts_receive = {}
 
 
 # =========================
-# BUFFER DE MENSAGENS
+# BROKER (BUFFER DISTRIBUÍDO)
 # =========================
 
-class MessageBuffer:
+class MessageBroker:
+
     def __init__(self):
-        self.buffer = []
+        self.messages = []
+        self.channels = defaultdict(list)
 
-    def store(self, message):
-        self.buffer.append(message)
+    def register_channel(self, channel, clients):
+        self.channels[channel] = clients
 
-    def consume(self, consumer_name, logical_time):
-        for msg in self.buffer:
-            if msg.consumer == consumer_name or msg.mode == "broadcast":
-                msg.timestamp_receive = logical_time
-                return msg
-        return None
+    def publish(self, message):
+        self.messages.append(message)
+
+        log(f"[SEND] {message.sender} -> {message.mode} | ts={message.ts_send}")
+
+    def consume(self, client):
+        msgs = []
+
+        for m in sorted(self.messages, key=lambda x: x.ts_send):
+
+            if m.mode == "broadcast":
+                msgs.append(m)
+
+            elif m.mode == "multicast" and client.name in self.channels[m.channel]:
+                msgs.append(m)
+
+            elif m.mode == "unicast" and client.name in m.receivers:
+                msgs.append(m)
+
+        return msgs
 
 
 # =========================
-# LOG
+# CLIENTE (NÓ DISTRIBUÍDO)
 # =========================
 
-def registrar_log(texto):
-    with open("mensageria.log", "a", encoding="utf-8") as arquivo:
-        arquivo.write(texto + "\n")
+class Client:
 
+    def __init__(self, name):
+        self.name = name
+        self.clock = LogicalClock()
+        self.priv, self.pub = CryptoPGP.gerar_chaves()
 
-# =========================
-# EXECUÇÃO (SIMULAÇÃO)
-# =========================
+    def send(self, broker, msg, receivers=None, channel=None, mode="unicast"):
+        ts = self.clock.tick()
 
-if __name__ == "__main__":
+        pkg = CryptoPGP.encrypt(msg, receivers[0].pub if receivers else self.pub, self.priv)
 
-    print("=== SISTEMA DE MENSAGERIA DISTRIBUÍDA ===\n")
+        m = Message(self.name, [r.name for r in receivers] if receivers else [], channel, pkg, mode, ts)
 
-    # relógios
-    clock_Henrique = LogicalClock()
-    clock_Luis = LogicalClock()
+        broker.publish(m)
 
-    # buffer
-    buffer = MessageBuffer()
+    def receive(self, broker, sender_pub_map):
+        messages = broker.consume(self)
 
-    # geração de chaves
-    priv_Henrique, pub_Henrique = gerar_chaves()
-    priv_Luis, pub_Luis = gerar_chaves()
+        for m in messages:
+            ts = self.clock.update(m.ts_send)
 
-    # envio
-    mensagem_original = "Transferência realizada com sucesso"
+            pub_sender = sender_pub_map[m.sender]
 
-    ts_envio = clock_Henrique.increment()
+            msg, valid = CryptoPGP.decrypt(m.content, self.priv, pub_sender)
 
-    pacote = criptografar_mensagem(
-        mensagem_original,
-        pub_Luis,
-        priv_Henrique
-    )
+            log(f"[RECV] {self.name} <- {m.sender} | ts={ts} | valid={valid}")
 
-    mensagem = Message(
-        producer="Henrique",
-        consumer="Luis",
-        channel="financeiro",
-        content=pacote,
-        mode="unicast",
-        timestamp=ts_envio
-    )
-
-    buffer.store(mensagem)
-
-    registrar_log(f"[PRODUCER] Henrique -> Luis | ts={ts_envio}")
-
-    # consumo
-    ts_receb = clock_Luis.update(ts_envio)
-
-    msg_recebida = buffer.consume("Luis", ts_receb)
-
-    mensagem_final, valido = descriptografar_mensagem(
-        msg_recebida.content,
-        priv_Luis,
-        pub_Henrique
-    )
-
-    registrar_log(f"[CONSUMER] Luis recebeu de Henrique | ts={ts_receb}")
-
-    # saída
-    print("Mensagem final:", mensagem_final)
-    print("Assinatura válida:", valido)
-    print("Timestamp envio:", ts_envio)
-    print("Timestamp recebimento:", ts_receb)
+            print(f"{self.name} recebeu: {msg}")
