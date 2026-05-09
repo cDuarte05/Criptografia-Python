@@ -1,7 +1,3 @@
-# =========================
-# TESTES
-# =========================
-
 from main import *
 
 def testar_criptografia():
@@ -20,7 +16,7 @@ def testar_criptografia():
         pacote,
         priv_b,
         pub_a,
-        "B"  # 👈 importante
+        "B"  
     )
 
     assert resultado == msg
@@ -78,16 +74,12 @@ def testar_fluxo_completo():
 
     broker.register_channel("grupo1", ["Luis", "Ana"])
 
-    # unicast
     A.send(broker, "Mensagem privada", [B], mode="unicast")
 
-    # multicast
     A.send(broker, "Mensagem grupo", [B, C], channel="grupo1", mode="multicast")
 
-    # broadcast (envia pra todos explicitamente)
     A.send(broker, "Mensagem global", [B, C], mode="broadcast")
 
-    # consumo
     print("\n--- RECEBIMENTO ---\n")
     B.receive(broker, pub_map)
     C.receive(broker, pub_map)
@@ -106,11 +98,6 @@ def rodar_testes():
     testar_fluxo_completo()
 
     print("\n✔ TODOS OS TESTES PASSARAM")
-
-
-# =========================
-# EXECUÇÃO
-# =========================
 
 if __name__ == "__main__":
     rodar_testes()

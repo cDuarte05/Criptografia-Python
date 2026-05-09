@@ -8,10 +8,6 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding as sym_padding
 
 
-# =========================
-# CRIPTOGRAFIA (PGP)
-# =========================
-
 class CryptoPGP:
 
     @staticmethod
@@ -48,7 +44,6 @@ class CryptoPGP:
 
         encrypted_keys = {}
 
-        # 🔥 chave AES criptografada para cada destinatário
         for name, pub_key in public_keys.items():
             pub = serialization.load_pem_public_key(pub_key)
 
@@ -130,10 +125,6 @@ class CryptoPGP:
         return msg, valid
 
 
-# =========================
-# RELÓGIO LÓGICO
-# =========================
-
 class LogicalClock:
     def __init__(self):
         self.time = 0
@@ -147,18 +138,11 @@ class LogicalClock:
         return self.time
 
 
-# =========================
-# LOGGER
-# =========================
 
 def log(msg):
     with open("log.txt", "a") as f:
         f.write(msg + "\n")
 
-
-# =========================
-# MESSAGE
-# =========================
 
 class Message:
     def __init__(self, sender, receivers, channel, content, mode, ts):
@@ -170,10 +154,6 @@ class Message:
         self.ts_send = ts
         self.ts_receive = {}
 
-
-# =========================
-# BROKER
-# =========================
 
 class MessageBroker:
 
@@ -204,10 +184,6 @@ class MessageBroker:
 
         return msgs
 
-
-# =========================
-# CLIENTE
-# =========================
 
 class Client:
 
@@ -246,7 +222,7 @@ class Client:
                 m.content,
                 self.priv,
                 pub_sender,
-                self.name  # 🔥 ESSENCIAL
+                self.name 
             )
 
             log(f"[RECV] {self.name} <- {m.sender} | ts={ts} | valid={valid}")
